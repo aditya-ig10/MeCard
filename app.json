@@ -13,17 +13,42 @@
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.afk-adi001.mecard"
     },
+    "plugins": [
+      [
+        "react-native-nfc-manager",
+        {
+          "nfcPermission": "This app uses NFC to read card information",
+          "selectIdentifiers": [
+            "A0000002471001"
+          ],
+          "systemCodes": [
+            "8008"
+          ]
+        }
+      ],
+      "expo-secure-store"
+    ],
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
-      "edgeToEdgeEnabled": true
+      "edgeToEdgeEnabled": true,
+      "permissions": [
+        "android.permission.NFC"
+      ],
+      "package": "com.afk_adi001.mecard"
     },
     "web": {
       "favicon": "./assets/favicon.png"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "2557a90b-08d1-407e-bf83-ec97194b7bac"
+      }
     }
   }
 }
