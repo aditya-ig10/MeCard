@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import {
   View,
   Text,
@@ -14,7 +14,7 @@ import {
   TextInput,
   BackHandler,
 } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import { MaterialCommunityIcons, Ionicons, MaterialIcons, FontAwesome } from '@expo/vector-icons'; // Replace Ionicons import
 import NfcManager, { NfcEvents } from 'react-native-nfc-manager';
 import * as Font from 'expo-font';
 import Animated, {
@@ -30,15 +30,58 @@ import Animated, {
   cancelAnimation,
   useAnimatedGestureHandler,
   runOnJS,
+  interpolate,
 } from 'react-native-reanimated';
 import { GestureHandlerRootView, PanGestureHandler, NativeViewGestureHandler } from 'react-native-gesture-handler';
 import { LinearGradient } from 'expo-linear-gradient';
 import { BlurView } from 'expo-blur';
 
+// Helper function to calculate luminance and determine text color
+const getTextColorForBackground = (colors) => {
+  // Convert hex to RGB
+  const hexToRgb = (hex) => {
+    const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+    return result ? {
+      r: parseInt(result[1], 16),
+      g: parseInt(result[2], 16),
+      b: parseInt(result[3], 16)
+    } : null;
+  };
+
+  // Calculate relative luminance
+  const getLuminance = (r, g, b) => {
+    const [rs, gs, bs] = [r, g, b].map(c => {
+      c = c / 255;
+      return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+    });
+    return 0.2126 * rs + 0.7152 * gs + 0.0722 * bs;
+  };
+
+  // Get average color from gradient
+  const color1 = hexToRgb(colors[0]);
+  const color2 = hexToRgb(colors[1]);
+  
+  if (!color1 || !color2) return '#FFFFFF';
+  
+  const avgR = (color1.r + color2.r) / 2;
+  const avgG = (color1.g + color2.g) / 2;
+  const avgB = (color1.b + color2.b) / 2;
+  
+  const luminance = getLuminance(avgR, avgG, avgB);
+  
+  // Return dark text for bright backgrounds, light text for dark backgrounds
+  return luminance > 0.5 ? '#000000' : '#FFFFFF';
+};
 
 const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
 const CARD_WIDTH = screenWidth * 0.85;
 const CARD_HEIGHT = CARD_WIDTH * 1.5;
+
+// Helper function to generate random shape
+const getRandomShape = () => {
+  const shapes = ['circle', 'triangle', 'square', 'hexagon'];
+  return shapes[Math.floor(Math.random() * shapes.length)];
+};
 
 const loadFonts = async () => {
   await Font.loadAsync({
@@ -54,15 +97,16 @@ const AddCardScreen = ({ navigation, route }) => {
   const [colors, setColors] = useState(['#007AFF', '#4DA8FF']);
   const [nfcId, setNfcId] = useState('');
   const [iconOverlayVisible, setIconOverlayVisible] = useState(false);
-  const [colorOverlayVisible, setColorOverlayVisible] = useState(false);
+const [colorOverlayVisible, setColorOverlayVisible] = useState(false);
+const [showColorSection, setShowColorSection] = useState(false);
+const [showIconSection, setShowIconSection] = useState(false);
   const [iconSearchQuery, setIconSearchQuery] = useState('');
   const [nfcPopupVisible, setNfcPopupVisible] = useState(false);
-
+  const textColor = useMemo(() => getTextColorForBackground(colors), [colors]);
   const flatListRef = React.useRef(null);
   const iconFlatListRef = React.useRef(null);
-  const colorScrollY = useSharedValue(0); // Track color FlatList scroll position
   const iconScrollY = useSharedValue(0);
-
+  const colorScrollY = useSharedValue(0);
   const breathingScale = useSharedValue(1);
   const iconScale = useSharedValue(1);
   const cardScale = useSharedValue(1);
@@ -71,10 +115,28 @@ const AddCardScreen = ({ navigation, route }) => {
   const overlayTranslateY = useSharedValue(screenHeight * 0.5);
   const iconOverlayHeight = useSharedValue(screenHeight * 0.5);
   const colorOverlayHeight = useSharedValue(screenHeight * 0.5);
+  const rotateX = useSharedValue(0);
+  const rotateY = useSharedValue(0);
+  const translateY = useSharedValue(0);
 
-  const breathingStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: breathingScale.value }],
-  }));
+  const colorSectionOpacity = useSharedValue(0);
+const colorSectionTranslateY = useSharedValue(30);
+const iconSectionOpacity = useSharedValue(0);
+const iconSectionTranslateY = useSharedValue(30);
+
+
+
+const colorSectionStyle = useAnimatedStyle(() => ({
+  opacity: colorSectionOpacity.value,
+  transform: [{ translateY: colorSectionTranslateY.value }],
+}));
+
+const iconSectionStyle = useAnimatedStyle(() => ({
+  opacity: iconSectionOpacity.value,
+  transform: [{ translateY: iconSectionTranslateY.value }],
+}));
+
+  const shape = useMemo(() => getRandomShape(), []);
 
   const springConfig = {
     damping: 15,
@@ -82,7 +144,79 @@ const AddCardScreen = ({ navigation, route }) => {
     mass: 0.5,
   };
 
+  
+
   const emphasizedEasing = Easing.bezier(0.2, 0, 0, 1);
+
+  const breathingStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: breathingScale.value }],
+  }));
+
+  const gestureHandler = useAnimatedGestureHandler({
+    onStart: () => {
+      cardElevation.value = withSpring(12, springConfig);
+      cardScale.value = withSpring(0.98, springConfig);
+    },
+    onActive: (event) => {
+      const maxRotation = 10;
+      rotateX.value = interpolate(
+        event.translationY,
+        [-100, 0, 100],
+        [maxRotation, 0, -maxRotation],
+        'clamp'
+      );
+      rotateY.value = interpolate(
+        event.translationX,
+        [-100, 0, 100],
+        [-maxRotation, 0, maxRotation],
+        'clamp'
+      );
+      translateY.value = event.translationY * 0.1;
+    },
+    onEnd: () => {
+      cardElevation.value = withSpring(4, springConfig);
+      cardScale.value = withSpring(1, springConfig);
+      rotateX.value = withSpring(0, springConfig);
+      rotateY.value = withSpring(0, springConfig);
+      translateY.value = withSpring(0, springConfig);
+    },
+  });
+
+  const toggleColorSection = () => {
+    if (!showColorSection) {
+      setShowColorSection(true);
+      setShowIconSection(false);
+      // Animate in
+      colorSectionOpacity.value = withTiming(1, { duration: 300, easing: Easing.out(Easing.cubic) });
+      colorSectionTranslateY.value = withTiming(0, { duration: 300, easing: Easing.out(Easing.cubic) });
+      // Hide icon section
+      iconSectionOpacity.value = withTiming(0, { duration: 200 });
+      iconSectionTranslateY.value = withTiming(30, { duration: 200 });
+    } else {
+      // Animate out
+      colorSectionOpacity.value = withTiming(0, { duration: 200, easing: Easing.in(Easing.cubic) });
+      colorSectionTranslateY.value = withTiming(30, { duration: 200, easing: Easing.in(Easing.cubic) });
+      setTimeout(() => setShowColorSection(false), 200);
+    }
+  };
+  
+  const toggleIconSection = () => {
+    if (!showIconSection) {
+      setShowIconSection(true);
+      setShowColorSection(false);
+      // Animate in
+      iconSectionOpacity.value = withTiming(1, { duration: 300, easing: Easing.out(Easing.cubic) });
+      iconSectionTranslateY.value = withTiming(0, { duration: 300, easing: Easing.out(Easing.cubic) });
+      // Hide color section
+      colorSectionOpacity.value = withTiming(0, { duration: 200 });
+      colorSectionTranslateY.value = withTiming(30, { duration: 200 });
+    } else {
+      // Animate out
+      iconSectionOpacity.value = withTiming(0, { duration: 200, easing: Easing.in(Easing.cubic) });
+      iconSectionTranslateY.value = withTiming(30, { duration: 200, easing: Easing.in(Easing.cubic) });
+      setTimeout(() => setShowIconSection(false), 200);
+    }
+  };
 
   const iconGestureHandler = useAnimatedGestureHandler({
     onStart: (_, ctx) => {
@@ -195,22 +329,22 @@ const AddCardScreen = ({ navigation, route }) => {
   
 
   const iconLibrary = [
-    { name: 'card-outline', category: 'payment', keywords: ['card', 'credit', 'payment'] },
-    { name: 'wallet-outline', category: 'payment', keywords: ['wallet', 'payment'] },
-    { name: 'cash-outline', category: 'payment', keywords: ['cash', 'money'] },
+    { name: 'train', category: 'payment', keywords: ['card', 'credit', 'payment'] },
+    { name: 'card', category: 'payment', keywords: ['wallet', 'payment'] },
+    { name: 'home', category: 'payment', keywords: ['cash', 'money'] },
+    { name: 'car', category: 'places', keywords: ['home', 'house'] },
+    { name: 'wine', category: 'transport', keywords: ['car', 'vehicle'] },
+    { name: 'airplane', category: 'transport', keywords: ['plane', 'travel'] },
+    { name: 'heart', category: 'health', keywords: ['heart', 'health'] },
+    { name: 'gift', category: 'shopping', keywords: ['gift', 'present'] },
+    { name: 'restaurant', category: 'food', keywords: ['food', 'restaurant'] },
+    { name: 'fitness', category: 'health', keywords: ['fitness', 'gym'] },
+    { name: 'school', category: 'education', keywords: ['school', 'education'] },
+    { name: 'business', category: 'work', keywords: ['business', 'work'] },
+    { name: 'medical', category: 'health', keywords: ['medical', 'health'] },
+    { name: 'game-controller', category: 'entertainment', keywords: ['game', 'play'] },
+    { name: 'musical-notes', category: 'entertainment', keywords: ['music', 'audio'] },
   ];
-
-  const colorPalettes = [
-    { name: 'Dark Gray', colors: ['#333333', '#666666'] },
-    { name: 'Light Gray', colors: ['#666666', '#999999'] },
-    { name: 'Monochrome', colors: ['#000000', '#666666'] },
-    { name: 'Inverted Mono', colors: ['#999999', '#333333'] },
-  ];
-
-  const filteredIcons = iconLibrary.filter(iconItem =>
-    iconItem.name.toLowerCase().includes(iconSearchQuery.toLowerCase()) ||
-    iconItem.keywords.some(keyword => keyword.toLowerCase().includes(iconSearchQuery.toLowerCase()))
-  );
 
   useEffect(() => {
     const loadResources = async () => {
@@ -222,16 +356,11 @@ const AddCardScreen = ({ navigation, route }) => {
       }
     };
     loadResources();
-
+  
     cardScale.value = withSpring(1, { ...springConfig, stiffness: 600 });
-
-    const interval = setInterval(() => {
-      iconScale.value = withTiming(iconScale.value === 1 ? 1.2 : 1, { duration: 1200, easing: Easing.inOut(Easing.ease) });
-    }, 1200);
-
+  
     const backHandler = BackHandler.addEventListener('hardwareBackPress', handleBackPress);
     return () => {
-      clearInterval(interval);
       backHandler.remove();
       NfcManager.setEventListener(NfcEvents.DiscoverTag, null);
       NfcManager.cancelTechnologyRequest().catch(() => {});
@@ -266,13 +395,96 @@ const AddCardScreen = ({ navigation, route }) => {
   }, [nfcPopupVisible]);
 
   const cardAnimatedStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: cardScale.value }],
-    shadowOpacity: cardElevation.value * 0.05,
+    transform: [
+      { scale: cardScale.value },
+      { rotateX: `${rotateX.value}deg` },
+      { rotateY: `${rotateY.value}deg` },
+      { translateY: translateY.value },
+      { perspective: 1000 },
+    ],
+    shadowOpacity: interpolate(cardElevation.value, [4, 12], [0.15, 0.3]),
   }));
 
-  const iconStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: iconScale.value }],
-  }));
+  const getShapeStyle = (baseStyle, shapeType) => {
+    switch (shapeType) {
+      case 'triangle':
+        return {
+          ...baseStyle,
+          width: 0,
+          height: 0,
+          borderLeftWidth: baseStyle.width / 2,
+          borderRightWidth: baseStyle.width / 2,
+          borderBottomWidth: baseStyle.height,
+          borderLeftColor: 'transparent',
+          borderRightColor: 'transparent',
+          borderBottomColor: baseStyle.backgroundColor,
+          backgroundColor: 'transparent',
+          borderRadius: 0,
+        };
+      case 'square':
+        return {
+          ...baseStyle,
+          borderRadius: 0,
+        };
+      case 'hexagon':
+        return {
+          ...baseStyle,
+          width: baseStyle.width * 0.866,
+          height: baseStyle.height,
+          backgroundColor: 'transparent',
+          borderRadius: 0,
+          overflow: 'visible',
+          transform: [{ rotate: '30deg' }],
+        };
+      case 'circle':
+      default:
+        return baseStyle;
+    }
+  };
+  
+  const decorativeElement1 = getShapeStyle(
+    {
+      position: 'absolute',
+      top: -40,
+      right: -40,
+      width: 120,
+      height: 120,
+      borderRadius: 60,
+      backgroundColor: 'rgba(255, 255, 255, 0.08)',
+      zIndex: 1,
+    },
+    shape
+  );
+  
+  const decorativeElement2 = getShapeStyle(
+    {
+      position: 'absolute',
+      bottom: -50,
+      left: -50,
+      width: 100,
+      height: 100,
+      borderRadius: 50,
+      backgroundColor: 'rgba(255, 255, 255, 0.06)',
+      zIndex: 1,
+    },
+    shape
+  );
+  
+  const decorativeElement3 = getShapeStyle(
+    {
+      position: 'absolute',
+      top: '40%',
+      right: -30,
+      width: 80,
+      height: 80,
+      borderRadius: 40,
+      backgroundColor: 'rgba(255, 255, 255, 0.04)',
+      zIndex: 1,
+    },
+    shape
+  );
+
+  
 
   const backgroundStyle = useAnimatedStyle(() => ({
     opacity: overlayOpacity.value,
@@ -436,28 +648,15 @@ const AddCardScreen = ({ navigation, route }) => {
     </TouchableOpacity>
   );
 
-  const renderColorPalette = ({ item }) => {
-    const isSelected = colors[0] === item.colors[0] && colors[1] === item.colors[1];
-    return (
-      <TouchableOpacity
-        style={[styles.colorPaletteItem, isSelected && styles.selectedColorPalette]}
-        onPress={() => {
-          setColors(item.colors);
-          toggleColorOverlay();
-        }}
-      >
-        <LinearGradient
-          colors={item.colors}
-          style={styles.colorGradientPreview}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 1 }}
-        />
-        <Text style={styles.colorPaletteName}>{item.name}</Text>
-      </TouchableOpacity>
-    );
-  };
-
   const handleBackPress = useCallback(() => {
+    if (showColorSection) {
+      setShowColorSection(false);
+      return true;
+    }
+    if (showIconSection) {
+      setShowIconSection(false);
+      return true;
+    }
     if (iconOverlayVisible) {
       toggleIconOverlay();
       return true;
@@ -472,12 +671,12 @@ const AddCardScreen = ({ navigation, route }) => {
     }
     navigation.goBack();
     return true;
-  }, [iconOverlayVisible, colorOverlayVisible, nfcPopupVisible, navigation]);
+  }, [showColorSection, showIconSection, iconOverlayVisible, colorOverlayVisible, nfcPopupVisible, navigation]);
 
   if (!fontsLoaded) {
     return (
       <View style={styles.container}>
-        <Text style={{ fontFamily: 'System', fontSize: 16, color: '#000' }}>Loading...</Text>
+        <Text style={{ fontFamily: 'SFProDisplay-Regular', fontSize: 16, color: '#000' }}>Loading...</Text>
       </View>
     );
   }
@@ -485,7 +684,7 @@ const AddCardScreen = ({ navigation, route }) => {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <View style={styles.container}>
-        <StatusBar barStyle="dark-content" backgroundColor="#FFFFFF" />
+        <StatusBar barStyle="light-content" backgroundColor="#FFFFFF" />
         <View style={styles.header}>
           <View style={styles.headerContent}>
             <TouchableOpacity
@@ -493,7 +692,7 @@ const AddCardScreen = ({ navigation, route }) => {
               onPress={handleBackPress}
               activeOpacity={0.7}
             >
-              <Ionicons name="arrow-back" size={24} color="#000000" />
+              <Ionicons name="arrow-back" size={24} color="#ffffff" />
             </TouchableOpacity>
             <Text style={styles.headerTitle}>Add New Card</Text>
           </View>
@@ -504,67 +703,119 @@ const AddCardScreen = ({ navigation, route }) => {
   nestedScrollEnabled={true}
   scrollEnabled={!colorOverlayVisible && !iconOverlayVisible} // Disable when overlays are open
 >
-          <Animated.View style={[styles.previewContainer, cardAnimatedStyle]}>
-            <LinearGradient
-              colors={colors}
-              style={[styles.previewCard]}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
-            >
-              <BlurView intensity={50} style={styles.surfaceBlur} />
-              <View style={styles.previewHeader}>
-                <View style={styles.colorButtonContainer}>
-                  <TouchableOpacity
-                    style={styles.circleButton}
-                    onPress={toggleColorOverlay}
-                    activeOpacity={0.7}
-                  >
-                    <LinearGradient
-                      colors={colors}
-                      style={styles.colorPreviewSmall}
-                      start={{ x: 0, y: 0 }}
-                      end={{ x: 1, y: 1 }}
-                    />
-                  </TouchableOpacity>
-                </View>
-              </View>
-              <Animated.View entering={FadeIn.delay(700)} style={styles.previewContent}>
-                <TouchableOpacity
-                  style={styles.previewIconContainer}
-                  onPress={toggleIconOverlay}
-                  activeOpacity={0.7}
-                >
-                  <Animated.View style={iconStyle}>
-                    <Ionicons name={icon} size={38} color="#FFFFFF" />
-                  </Animated.View>
-                </TouchableOpacity>
-                <View style={styles.previewTitleContainer}>
-                  <TextInput
-                    value={cardName}
-                    onChangeText={setCardName}
-                    placeholder="Card Name"
-                    placeholderTextColor="rgba(255, 255, 255, 0.6)"
-                    style={styles.previewTitle}
-                    numberOfLines={1}
-                    maxLength={20}
-                    multiline={false}
-                  />
-                </View>
-                <View style={styles.titleUnderline} />
-              </Animated.View>
-              <Animated.View entering={FadeIn.delay(900)} style={styles.previewBottom}>
-                <View style={styles.numberContainer}>
-                  <Text style={styles.numberLabel}>CARD NUMBER</Text>
-                  <Text style={styles.previewNumber} numberOfLines={1} adjustsFontSizeToFit>
-                    {(nfcId || '0000 0000 0000').replace(/(.{4})/g, '$1 ').trim()}
-                  </Text>
-                </View>
-              </Animated.View>
-              <View style={styles.decorativeElement1} />
-              <View style={styles.decorativeElement2} />
-              <View style={styles.decorativeElement3} />
-            </LinearGradient>
-          </Animated.View>
+<PanGestureHandler onGestureEvent={gestureHandler}>
+  <Animated.View style={[styles.previewContainer, cardAnimatedStyle]}>
+    <LinearGradient
+      colors={colors}
+      style={[styles.previewCard]}
+      start={{ x: 0, y: 0 }}
+      end={{ x: 1, y: 1 }}
+    >
+      <BlurView intensity={50} style={styles.surfaceBlur} />
+      <View style={styles.previewHeader}>
+      <TouchableOpacity 
+  style={styles.colorButtonContainer}
+  onPress={toggleColorSection}
+  activeOpacity={0.7}
+>
+  <LinearGradient
+    colors={colors}
+    style={styles.colorPreviewSmall}
+    start={{ x: 0, y: 0 }}
+    end={{ x: 1, y: 1 }}
+  />
+</TouchableOpacity>
+      </View>
+      <Animated.View entering={FadeIn.delay(700)} style={styles.previewContent}>
+      <TouchableOpacity 
+  style={styles.previewIconContainer}
+  onPress={toggleIconSection}
+  activeOpacity={0.7}
+>
+<Ionicons name={icon} size={38} color={textColor} />
+</TouchableOpacity>
+        <View style={styles.previewTitleContainer}>
+        <TextInput
+  value={cardName}
+  onChangeText={setCardName}
+  placeholder="Card Name"
+  placeholderTextColor={textColor === '#000000' ? 'rgba(0, 0, 0, 0.6)' : 'rgba(255, 255, 255, 0.6)'}
+  style={[styles.previewTitle, { color: textColor }]}
+  numberOfLines={1}
+  maxLength={20}
+  multiline={false}
+/>
+        </View>
+        <View style={[styles.titleUnderline, { backgroundColor: textColor === '#000000' ? 'rgba(0, 0, 0, 0.6)' : 'rgba(255, 255, 255, 0.6)' }]} />
+      </Animated.View>
+      <Animated.View entering={FadeIn.delay(900)} style={styles.previewBottom}>
+        <View style={styles.numberContainer}>
+        <Text style={[styles.numberLabel, { color: textColor === '#000000' ? 'rgba(0, 0, 0, 0.7)' : 'rgba(255, 255, 255, 0.7)' }]}>CARD NUMBER</Text>
+<Text style={[styles.previewNumber, { color: textColor }]} numberOfLines={1} adjustsFontSizeToFit>
+  {(nfcId || '0000 0000 0000').replace(/(.{4})/g, '$1 ').trim()}
+</Text>
+        </View>
+      </Animated.View>
+      <View style={decorativeElement1}>
+        {shape === 'hexagon' && (
+          <View
+            style={{
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              width: decorativeElement1.width,
+              height: decorativeElement1.height,
+              backgroundColor: decorativeElement1.backgroundColor,
+              clipPath: 'polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%)',
+            }}
+          />
+        )}
+      </View>
+      <View style={decorativeElement2}>
+        {shape === 'hexagon' && (
+          <View
+            style={{
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              width: decorativeElement2.width,
+              height: decorativeElement2.height,
+              backgroundColor: decorativeElement2.backgroundColor,
+              clipPath: 'polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%)',
+            }}
+          />
+        )}
+      </View>
+      <View style={decorativeElement3}>
+        {shape === 'hexagon' && (
+          <View
+            style={{
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              width: decorativeElement3.width,
+              height: decorativeElement3.height,
+              backgroundColor: decorativeElement3.backgroundColor,
+              clipPath: 'polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%)',
+            }}
+          />
+        )}
+      </View>
+      <TouchableOpacity
+        style={styles.stateLayer}
+        activeOpacity={0.95}
+        onPress={() => {
+          cardScale.value = withSequence(
+            withTiming(0.98, { duration: 150 }),
+            withSpring(1, springConfig)
+          );
+        }}
+      >
+        <View style={styles.rippleEffect} />
+      </TouchableOpacity>
+    </LinearGradient>
+  </Animated.View>
+</PanGestureHandler>
 
           {nfcId ? (
             <View style={styles.nfcIdContainer}>
@@ -573,143 +824,86 @@ const AddCardScreen = ({ navigation, route }) => {
             </View>
           ) : null}
 
-          <View style={styles.buttonRow}>
-            <TouchableOpacity
-              style={[styles.actionButton, styles.nfcButton, nfcPopupVisible && styles.buttonDisabled]}
-              onPress={startNfcScan}
-              disabled={nfcPopupVisible}
-              activeOpacity={0.7}
-            >
-              <Ionicons name="wifi-outline" size={24} color="#007AFF" />
-              <Text style={[styles.buttonText, styles.nfcButtonText]}>Scan NFC</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.actionButton, styles.saveButton, !nfcId && styles.buttonDisabled]}
-              onPress={saveCard}
-              disabled={!nfcId}
-              activeOpacity={0.7}
-            >
-              <Ionicons name="checkmark-circle-outline" size={24} color="#FFFFFF" />
-              <Text style={[styles.buttonText, styles.saveButtonText]}>Save Card</Text>
-            </TouchableOpacity>
-          </View>
-        </ScrollView>
-
-        {iconOverlayVisible && (
-  <Animated.View style={[styles.overlayContainer, backgroundStyle]}>
-   <PanGestureHandler
-  onGestureEvent={iconGestureHandler}
-  activeOffsetY={[-1, 1]} // Ultra-sensitive
-  simultaneousHandlers={iconFlatListRef}
->
-      <Animated.View style={[styles.overlayContent, contentStyle, { height: iconOverlayHeight }]}>
-        <View style={styles.drawerHandleContainer}>
-          <Ionicons name="chevron-up" size={24} color="#666666" />
-        </View>
-        <View style={styles.overlayHeader}>
-          <View style={{ width: 40 }} />
-          <Text style={styles.overlayTitle}>Select Icon</Text>
+          {/* Colors Section */}
+          {showColorSection && (
+  <Animated.View style={[styles.inlineSection, colorSectionStyle]}>
+    <Text style={styles.sectionTitle}>Colors</Text>
+    <FlatList
+      data={customGradients}
+      renderItem={({ item }) => {
+        const isSelected = colors[0] === item.colors[0] && colors[1] === item.colors[1];
+        return (
           <TouchableOpacity
-            style={styles.closeButton}
-            onPress={toggleIconOverlay}
-            activeOpacity={0.7}
+            style={[styles.inlineColorItem, isSelected && styles.selectedInlineColorItem]}
+            onPress={() => {
+              setColors(item.colors);
+            }}
           >
-            <Ionicons name="close" size={24} color="#000000" />
+            <LinearGradient
+              colors={item.colors}
+              style={styles.inlineColorCircle}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+            />
           </TouchableOpacity>
-        </View>
-        <View style={styles.searchContainer}>
-          <TextInput
-            value={iconSearchQuery || ''}
-            onChangeText={setIconSearchQuery}
-            placeholder="Search icons..."
-            style={styles.searchInput}
-            placeholderTextColor="#999999"
-          />
-        </View>
-        <NativeViewGestureHandler ref={iconFlatListRef}>
-        <FlatList
-  data={filteredIcons}
-  renderItem={renderIconItem}
-  keyExtractor={item => item.name}
-  numColumns={3}
-  showsVerticalScrollIndicator={true}
-  contentContainerStyle={styles.iconGrid}
-  style={{ flex: 1 }}
-  bounces={true}
-  onScroll={(event) => {
-    'worklet';
-    iconScrollY.value = event.nativeEvent.contentOffset.y;
-  }}
-  scrollEventThrottle={16}
-/>
-</NativeViewGestureHandler>
-      </Animated.View>
-    </PanGestureHandler>
+        );
+      }}
+      keyExtractor={(item, index) => index.toString()}
+      horizontal
+      showsHorizontalScrollIndicator={false}
+      contentContainerStyle={styles.inlineColorsList}
+    />
   </Animated.View>
 )}
 
-{colorOverlayVisible && (
-  <Animated.View style={[styles.overlayContainer, backgroundStyle]}>
-    <PanGestureHandler
-  onGestureEvent={colorGestureHandler}
-  activeOffsetY={[-1, 1]} // Ultra-sensitive
-  simultaneousHandlers={flatListRef}
->
-      <Animated.View style={[styles.overlayContent, contentStyle, { height: colorOverlayHeight }]}>
-        <View style={styles.drawerHandleContainer}>
-          <Ionicons name="chevron-up" size={24} color="#666666" />
-        </View>
-        <View style={styles.overlayHeader}>
-          <View style={{ width: 40 }} />
-          <Text style={styles.overlayTitle}>Select Colors</Text>
-          <TouchableOpacity
-            style={styles.closeButton}
-            onPress={toggleColorOverlay}
-            activeOpacity={0.7}
-          >
-            <Ionicons name="close" size={24} color="#000000" />
-          </TouchableOpacity>
-        </View>
-        <NativeViewGestureHandler ref={flatListRef}>
-        <FlatList
-  data={customGradients}
+{/* Icons Section */}
+{showIconSection && (
+  <Animated.View style={[styles.inlineSection, iconSectionStyle]}>
+    <Text style={styles.sectionTitle}>Icons</Text>
+    <FlatList
+  data={iconLibrary}
   renderItem={({ item }) => {
-    const isSelected = colors[0] === item.colors[0] && colors[1] === item.colors[1];
+    const isSelected = icon === item.name;
     return (
       <TouchableOpacity
-        style={[styles.gradientCircleItem, isSelected && styles.selectedGradientCircleItem]}
+        style={[styles.inlineIconItem, isSelected && styles.selectedInlineIconItem]}
         onPress={() => {
-          setColors(item.colors);
-          toggleColorOverlay();
+          setIcon(item.name);
         }}
       >
-        <LinearGradient
-          colors={item.colors}
-          style={styles.gradientCircle}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 1 }}
-        />
-        <Text style={styles.gradientCircleName}>{item.name}</Text>
+        <Ionicons name={item.name} size={30} color={isSelected ? '#FFFFFF' : '#888'} />
       </TouchableOpacity>
     );
   }}
-  keyExtractor={(item, index) => index.toString()}
-  numColumns={3}
-  contentContainerStyle={styles.gradientCircleGrid}
-  showsVerticalScrollIndicator={true}
-  style={{ flex: 1 }}
-  bounces={true}
-  onScroll={(event) => {
-    'worklet';
-    colorScrollY.value = event.nativeEvent.contentOffset.y;
-  }}
-  scrollEventThrottle={16}
+  keyExtractor={item => item.name}
+  horizontal
+  showsHorizontalScrollIndicator={false}
+  contentContainerStyle={styles.inlineIconsList}
 />
-</NativeViewGestureHandler>
-      </Animated.View>
-    </PanGestureHandler>
   </Animated.View>
 )}
+
+<View style={styles.buttonRow}>
+  <TouchableOpacity
+    style={[styles.actionButton, styles.nfcButton, nfcPopupVisible && styles.buttonDisabled]}
+    onPress={startNfcScan}
+    disabled={nfcPopupVisible}
+    activeOpacity={0.7}
+  >
+    <Ionicons name="radio" size={24} color="#444" />
+    <Text style={[styles.buttonText, styles.nfcButtonText]}>Scan NFC</Text>
+  </TouchableOpacity>
+  <TouchableOpacity
+    style={[styles.actionButton, styles.saveButton, !nfcId && styles.buttonDisabled]}
+    onPress={saveCard}
+    disabled={!nfcId}
+    activeOpacity={0.7}
+  >
+    <Ionicons name="checkmark-circle-outline" size={24} color="#FFFFFF" />
+    <Text style={[styles.buttonText, styles.saveButtonText]}>Save Card</Text>
+  </TouchableOpacity>
+</View>
+        </ScrollView>
 
         {nfcPopupVisible && (
           <Animated.View style={[styles.nfcPopupContainer, backgroundStyle]}>
@@ -720,7 +914,7 @@ const AddCardScreen = ({ navigation, route }) => {
               <Text style={styles.nfcPopupSubText}>Place your Card at the Back</Text>
               <Animated.View style={[breathingStyle, { marginBottom: 20 }]}>
                 <View style={styles.breathingCircle}>
-                  <Ionicons name="wifi-outline" size={48} color="#007AFF" />
+                  <Ionicons name="radio" size={48} color="#007AFF" />
                 </View>
               </Animated.View>
               <TouchableOpacity
@@ -741,7 +935,7 @@ const AddCardScreen = ({ navigation, route }) => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: '#000000',
   },
   header: {
     paddingTop: StatusBar.currentHeight || 44,
@@ -756,7 +950,7 @@ const styles = StyleSheet.create({
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: '#F0F0F0',
+    backgroundColor: '#333',
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: 12,
@@ -768,7 +962,7 @@ const styles = StyleSheet.create({
   headerTitle: {
     fontSize: 24,
     fontWeight: '600',
-    color: '#000000',
+    color: '#ffffff',
     fontFamily: 'SFProDisplay-Regular',
   },
   scrollContent: {
@@ -799,6 +993,21 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: 0,
     backgroundColor: 'rgba(255, 255, 255, 0.05)',
+  },
+  previewIconContainer: {
+    width: 4,
+    height: 4,
+    borderRadius: 12,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  inlineIconsList: {
+    paddingHorizontal: 10,
+    height: 90,
+    marginBottom: -15,
   },
   previewHeader: {
     flexDirection: 'row',
@@ -904,21 +1113,21 @@ const styles = StyleSheet.create({
     alignSelf: 'center',
     marginVertical: 8,
     alignItems: 'center',
-    backgroundColor: '#F5F5F5',
+    backgroundColor: '#222',
     borderWidth: 2,
-    borderColor: '#E0E0E0',
+    borderColor: '#111',
   },
   nfcIdLabel: {
     fontSize: 12,
     fontWeight: '500',
-    color: '#666666',
+    color: '#888',
     fontFamily: 'SFProText-Regular',
     marginBottom: 4,
   },
   nfcIdText: {
     fontSize: 18,
     fontWeight: '400',
-    color: '#000000',
+    color: '#ffffff',
     fontFamily: 'SFProText-Regular',
   },
   breathingCircle: {
@@ -961,7 +1170,7 @@ const styles = StyleSheet.create({
     borderColor: '#E0E0E0',
   },
   saveButton: {
-    backgroundColor: '#000000',
+    backgroundColor: '#222',
     borderWidth: 0,
   },
   buttonDisabled: {
@@ -974,7 +1183,9 @@ const styles = StyleSheet.create({
     marginLeft: 8,
   },
   nfcButtonText: {
-    color: '#007AFF',
+    color: '#000000',
+    fontFamily: 'SFProText-Regular',
+    fontWeight: '600',
   },
   saveButtonText: {
     color: '#FFFFFF',
@@ -1128,12 +1339,12 @@ const styles = StyleSheet.create({
   },
   nfcPopupContainer: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(51, 51, 51, 0.7)',
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
     justifyContent: 'flex-end',
     alignItems: 'center',
   },
   nfcPopupContent: {
-    backgroundColor: '#FFFFFF',
+    backgroundColor: '#0f0f0f',
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
     padding: 30,
@@ -1149,7 +1360,7 @@ const styles = StyleSheet.create({
   nfcPopupText: {
     fontSize: 28,
     fontWeight: '800',
-    color: '#333333',
+    color: '#ffffff',
     fontFamily: 'SFProDisplay-Regular',
     marginTop: 12,
     textAlign: 'center',
@@ -1157,15 +1368,15 @@ const styles = StyleSheet.create({
   nfcPopupSubText: {
     fontSize: 16,
     fontWeight: '600',
-    color: '#666666',
+    color: '#999',
     fontFamily: 'SFProDisplay-Regular',
-    marginVertical: 6,
+    marginVertical: 2,
     marginBottom: 40,
     textAlign: 'center',
   },
   cancelButton: {
-    backgroundColor: '#000000',
-    borderRadius: 12,
+    backgroundColor: '#f1f1f1',
+    borderRadius: 22,
     paddingVertical: 12,
     paddingHorizontal: 24,
     marginTop: 50,
@@ -1173,8 +1384,8 @@ const styles = StyleSheet.create({
   },
   cancelButtonText: {
     fontSize: 16,
-    fontWeight: '600',
-    color: '#FFFFFF',
+    fontWeight: '800',
+    color: '#000000',
     fontFamily: 'SFProText-Regular',
   },
   decorativeElement1: {
@@ -1206,6 +1417,74 @@ const styles = StyleSheet.create({
     borderRadius: 40,
     backgroundColor: 'rgba(255, 255, 255, 0.04)',
     zIndex: 1,
+  },
+
+    stateLayer: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    borderRadius: 20,
+  },
+  rippleEffect: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+  },
+  inlineSection: {
+    marginVertical: 16,
+    width: CARD_WIDTH,
+    alignSelf: 'center',
+  },
+  sectionTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#FFFFFF',
+    fontFamily: 'SFProDisplay-Regular',
+    marginBottom: 12,
+  },
+  inlineColorsList: {
+    paddingHorizontal: 8,
+  },
+  inlineColorItem: {
+    marginHorizontal: 8,
+    padding: 4,
+    borderRadius: 32,
+    borderWidth: 2,
+    borderColor: 'transparent',
+  },
+  selectedInlineColorItem: {
+    borderColor: '#007AFF',
+  },
+  inlineColorCircle: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+  },
+  inlineIconsGrid: {
+    paddingHorizontal: 8,
+    paddingVertical: 8,
+  },
+  inlineIconItem: {
+    flex: 1,
+    margin: 6,
+    padding: 12,
+    borderRadius: 40,
+    backgroundColor: '#222',
+    borderWidth: 2,
+    borderColor: 'transparent',
+    aspectRatio: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  selectedInlineIconItem: {
+    borderColor: '#007AFF',
+    backgroundColor: '#1a1a1a',
   },
 });
 
