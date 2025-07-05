@@ -14,6 +14,7 @@ import {
   TextInput,
   BackHandler,
 } from 'react-native';
+import * as Keychain from 'react-native-keychain';
 import { MaterialCommunityIcons, Ionicons, MaterialIcons, FontAwesome } from '@expo/vector-icons'; // Replace Ionicons import
 import NfcManager, { NfcEvents } from 'react-native-nfc-manager';
 import * as Font from 'expo-font';
@@ -217,64 +218,6 @@ const iconSectionStyle = useAnimatedStyle(() => ({
       setTimeout(() => setShowIconSection(false), 200);
     }
   };
-
-  const iconGestureHandler = useAnimatedGestureHandler({
-    onStart: (_, ctx) => {
-      ctx.startY = iconOverlayHeight.value;
-    },
-    onActive: (event, ctx) => {
-      const newHeight = ctx.startY - event.translationY;
-      iconOverlayHeight.value = Math.min(Math.max(newHeight, screenHeight * 0.5), screenHeight * 0.95);
-    },
-    onEnd: (event) => {
-      if (event.translationY <= 0) {
-        // Swipe up: Always open fully
-        iconOverlayHeight.value = withTiming(screenHeight * 0.95, {
-          duration: 200,
-          easing: Easing.out(Easing.cubic),
-        });
-      } else if (iconScrollY.value === 0) {
-        // Swipe down: Only close if at top of FlatList
-        iconOverlayHeight.value = withTiming(screenHeight * 0.5, {
-          duration: 300,
-          easing: Easing.inOut(Easing.cubic),
-        });
-        setIconOverlayVisible(false);
-      }
-    },
-  });
-  
-  const colorGestureHandler = useAnimatedGestureHandler({
-    onStart: (_, ctx) => {
-      ctx.startY = colorOverlayHeight.value;
-    },
-    onActive: (event, ctx) => {
-      const newHeight = ctx.startY - event.translationY;
-      colorOverlayHeight.value = Math.min(Math.max(newHeight, screenHeight * 0.5), screenHeight * 0.95);
-    },
-    onEnd: (event) => {
-      if (event.translationY <= 0) {
-        // Swipe up: Always open fully
-        colorOverlayHeight.value = withTiming(screenHeight * 0.95, {
-          duration: 200,
-          easing: Easing.out(Easing.cubic),
-        });
-      } else if (colorScrollY.value === 0) {
-        // Swipe down: Only close if at top of FlatList
-        colorOverlayHeight.value = withTiming(screenHeight * 0.5, {
-          duration: 300,
-          easing: Easing.inOut(Easing.cubic),
-        });
-        setColorOverlayVisible(false);
-      } else {
-        // Snap back to full size if not at top
-        colorOverlayHeight.value = withTiming(screenHeight * 0.95, {
-          duration: 200,
-          easing: Easing.out(Easing.cubic),
-        });
-      }
-    },
-  });
 
   const customGradients = [
     { name: 'Blue Ocean', colors: ['#007AFF', '#4DA8FF'] },
@@ -510,57 +453,122 @@ const iconSectionStyle = useAnimatedStyle(() => ({
     initNfc();
   }, []);
 
-  const startNfcScan = async () => {
-    try {
-      setNfcPopupVisible(true);
-      const isEnabled = await NfcManager.isEnabled();
-      if (!isEnabled) {
+const startNfcScan = async () => {
+  try {
+    setNfcPopupVisible(true);
+    const isEnabled = await NfcManager.isEnabled();
+    if (!isEnabled) {
+      if (Platform.OS === 'android') {
+        ToastAndroid.show('Please enable NFC in your device settings', ToastAndroid.LONG);
+      } else {
+        Alert.alert('NFC Disabled', 'Please enable NFC in your device settings');
+      }
+      cancelNfcScan();
+      return;
+    }
+    await NfcManager.registerTagEvent();
+    NfcManager.setEventListener(NfcEvents.DiscoverTag, async (tag) => {
+      let cardId = tag.id
+        ? Array.isArray(tag.id)
+          ? tag.id.map(byte => byte.toString(16).padStart(2, '0')).join('').toUpperCase()
+          : tag.id.toString()
+        : '';
+      
+      let ndefRecords = [];
+      let emvData = null;
+      let appIds = [];
+      let encryptedKeys = null;
+
+      // Read NDEF Records
+      if (tag.ndefMessage) {
+        ndefRecords = tag.ndefMessage.map(record => ({
+          tnf: record.tnf,
+          type: record.type ? String.fromCharCode.apply(null, record.type) : '',
+          id: record.id ? String.fromCharCode.apply(null, record.id) : '',
+          payload: record.payload ? String.fromCharCode.apply(null, record.payload) : '',
+        }));
+      }
+
+      // Attempt to read EMV data (for NCMC, using IsoDep)
+      try {
         if (Platform.OS === 'android') {
-          ToastAndroid.show('Please enable NFC in your device settings', ToastAndroid.LONG);
+          await NfcManager.requestTechnology('IsoDep'); // Fix: Use string 'IsoDep' instead of NfcTech.IsoDep
+          const isoDep = await NfcManager.getTag();
+          // Example APDU command to select NCMC application (RuPay AID)
+          const selectAid = [0x00, 0xA4, 0x04, 0x00, 0x07, 0xA0, 0x00, 0x00, 0x00, 0x04, 0x10, 0x10, 0x00]; // RuPay AID
+          const response = await isoDep.transceive(selectAid);
+          emvData = response.map(byte => byte.toString(16).padStart(2, '0')).join('');
+          appIds.push('A0000000041010'); // RuPay AID
+        }
+      } catch (err) {
+        console.warn('EMV Data Error:', err);
+        // Fallback: Continue even if EMV data can't be read
+      } finally {
+        if (Platform.OS === 'android') {
+          await NfcManager.cancelTechnologyRequest().catch(() => {});
+        }
+      }
+
+      // Simulate cryptographic keys (DMRC/NCMC keys are proprietary)
+      const cryptoKeys = { key: 'sample-key-data' }; // Placeholder, replace with actual key if accessible
+      // Encrypt sensitive data
+      try {
+        if (Keychain) {
+          const encrypted = await Keychain.setGenericPassword('metroCardKeys', JSON.stringify(cryptoKeys), {
+            accessControl: Keychain.ACCESS_CONTROL.BIOMETRY_ANY,
+            accessible: Keychain.ACCESSIBLE.WHEN_UNLOCKED,
+          });
+          encryptedKeys = encrypted ? 'encrypted' : null;
         } else {
-          Alert.alert('NFC Disabled', 'Please enable NFC in your device settings');
+          console.warn('Keychain not available, skipping encryption');
+          encryptedKeys = 'unencrypted:' + JSON.stringify(cryptoKeys);
+        }
+      } catch (err) {
+        console.warn('Encryption Error:', err);
+        encryptedKeys = 'error:' + JSON.stringify(cryptoKeys);
+      }
+
+      if (!cardId) {
+        if (Platform.OS === 'android') {
+          ToastAndroid.show('Unable to read card ID. Please try again.', ToastAndroid.SHORT);
+        } else {
+          Alert.alert('Scan Failed', 'Unable to read card ID. Please try again.');
         }
         cancelNfcScan();
         return;
       }
-      await NfcManager.registerTagEvent();
-      NfcManager.setEventListener(NfcEvents.DiscoverTag, (tag) => {
-        let cardId = '';
-        if (tag.id) {
-          cardId = Array.isArray(tag.id)
-            ? tag.id.map(byte => byte.toString(16).padStart(2, '0')).join('').toUpperCase()
-            : tag.id.toString();
-        } else {
-          if (Platform.OS === 'android') {
-            ToastAndroid.show('Unable to read card ID. Please try again.', ToastAndroid.SHORT);
-          } else {
-            Alert.alert('Scan Failed', 'Unable to read card ID. Please try again.');
-          }
-          cancelNfcScan();
-          return;
-        }
-        setNfcId(cardId);
-        setNfcPopupVisible(false);
-        if (Platform.OS === 'android') {
-          ToastAndroid.show(`Card ID: ${cardId}`, ToastAndroid.LONG);
-        } else {
-          Alert.alert('NFC Detected', `Card ID: ${cardId}`);
-        }
-        NfcManager.unregisterTagEvent();
-      });
-    } catch (err) {
-      console.warn('NFC Scan Error:', err);
+
+      setNfcId(cardId);
+      setCardData({ cardId, ndefRecords, emvData, appIds, encryptedKeys });
       setNfcPopupVisible(false);
-      if (err.message && err.message.includes('cancelled')) {
-        return;
-      }
       if (Platform.OS === 'android') {
-        ToastAndroid.show('Failed to scan NFC card. Please try again.', ToastAndroid.SHORT);
+        ToastAndroid.show(`Card ID: ${cardId}`, ToastAndroid.LONG);
       } else {
-        Alert.alert('Scan Error', 'Failed to scan NFC card. Please try again.');
+        Alert.alert('NFC Detected', `Card ID: ${cardId}\nRecords: ${ndefRecords.length}\nApp IDs: ${appIds.join(', ')}`);
       }
+      NfcManager.unregisterTagEvent();
+    });
+  } catch (err) {
+    console.warn('NFC Scan Error:', err);
+    setNfcPopupVisible(false);
+    if (err.message && err.message.includes('cancelled')) {
+      return;
     }
-  };
+    if (Platform.OS === 'android') {
+      ToastAndroid.show('Failed to scan NFC card. Please try again.', ToastAndroid.SHORT);
+    } else {
+      Alert.alert('Scan Error', 'Failed to scan NFC card. Please try again.');
+    }
+  }
+};
+
+const [cardData, setCardData] = useState({
+  cardId: '',
+  ndefRecords: [],
+  emvData: null,
+  appIds: [],
+  encryptedKeys: null,
+});
 
   const cancelNfcScan = async () => {
     try {
@@ -580,16 +588,20 @@ const iconSectionStyle = useAnimatedStyle(() => ({
       Alert.alert('Missing Information', 'Please enter a card name.');
       return;
     }
-    if (!nfcId) {
+    if (!cardData.cardId) {
       Alert.alert('Missing Information', 'Please scan an NFC card.');
       return;
     }
     const newCard = {
       uniqueId: Date.now().toString() + Math.random().toString(36).substr(2, 9),
       title: cardName,
-      number: nfcId,
+      number: cardData.cardId,
       colors,
       icon,
+      ndefRecords: cardData.ndefRecords,
+      emvData: cardData.emvData,
+      appIds: cardData.appIds,
+      encryptedKeys: cardData.encryptedKeys,
     };
     if (route.params?.onCardAdded) {
       route.params.onCardAdded(newCard);
@@ -597,6 +609,7 @@ const iconSectionStyle = useAnimatedStyle(() => ({
     navigation.goBack();
     setCardName('');
     setNfcId('');
+    setCardData({ cardId: '', ndefRecords: [], emvData: null, appIds: [], encryptedKeys: null });
     setIcon('card-outline');
     setColors(['#007AFF', '#4DA8FF']);
   };
@@ -750,7 +763,7 @@ const iconSectionStyle = useAnimatedStyle(() => ({
       </Animated.View>
       <Animated.View entering={FadeIn.delay(900)} style={styles.previewBottom}>
         <View style={styles.numberContainer}>
-        <Text style={[styles.numberLabel, { color: textColor === '#000000' ? 'rgba(0, 0, 0, 0.7)' : 'rgba(255, 255, 255, 0.7)' }]}>CARD NUMBER</Text>
+        <Text style={[styles.numberLabel, { color: textColor === '#000000' ? 'rgba(0, 0, 0, 0.7)' : 'rgba(255, 255, 255, 0.7)' }]}>NFC META</Text>
 <Text style={[styles.previewNumber, { color: textColor }]} numberOfLines={1} adjustsFontSizeToFit>
   {(nfcId || '0000 0000 0000').replace(/(.{4})/g, '$1 ').trim()}
 </Text>
